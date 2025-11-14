@@ -21,9 +21,49 @@ pip install requests
 
 ```json
 {
-  "referral_code": "REF-****"
+  "email_base": "https://mail.chatgpt.org.uk",
+  "referral_code": "REF-****",
+  "proxy": {
+    "enabled": false,
+    "http": "",
+    "https": ""
+  }
 }
 ```
+
+### 代理配置（可选）
+
+如果需要使用代理，请按以下方式配置：
+
+**HTTP代理示例：**
+```json
+{
+  "email_base": "https://mail.chatgpt.org.uk",
+  "referral_code": "REF-****",
+  "proxy": {
+    "enabled": true,
+    "http": "http://127.0.0.1:7890",
+    "https": "http://127.0.0.1:7890"
+  }
+}
+```
+
+**SOCKS5代理示例：**
+```json
+{
+  "email_base": "https://mail.chatgpt.org.uk",
+  "referral_code": "REF-****",
+  "proxy": {
+    "enabled": true,
+    "http": "socks5://127.0.0.1:1080",
+    "https": "socks5://127.0.0.1:1080"
+  }
+}
+```
+
+注意：
+- 如果不使用代理，请将 `enabled` 设置为 `false`
+- SOCKS5 代理需要安装额外的依赖：`pip install requests[socks]`
 
 ## 使用方法
 

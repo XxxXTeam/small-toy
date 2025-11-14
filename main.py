@@ -12,6 +12,21 @@ def load_config():
         return json.load(f)
 
 
+def get_proxies(config):
+    """从配置中获取代理设置"""
+    proxy_config = config.get('proxy', {})
+    if not proxy_config.get('enabled', False):
+        return None
+    
+    proxies = {}
+    if proxy_config.get('http'):
+        proxies['http'] = proxy_config['http']
+    if proxy_config.get('https'):
+        proxies['https'] = proxy_config['https']
+    
+    return proxies if proxies else None
+
+
 def get_temp_email(config):
     """获取临时邮箱地址"""
     email_base = config['email_base']
@@ -21,8 +36,10 @@ def get_temp_email(config):
         'Referer': f"{email_base}/"
     }
     
+    proxies = get_proxies(config)
+    
     try:
-        response = requests.get(api_url, headers=headers)
+        response = requests.get(api_url, headers=headers, proxies=proxies)
         response.raise_for_status()
         data = response.json()
         
@@ -103,11 +120,13 @@ def signup_account(config, email, referral_code, max_retries=5):
     print(f"  密码: {password}")
     print(f"  邀请码: {referral_code}")
     
+    proxies = get_proxies(config)
+    
     retry_count = 0
     while retry_count < max_retries:
         try:
             print(f"\n发起注册请求... (尝试 {retry_count + 1}/{max_retries})")
-            response = requests.post(signup_url, json=payload)
+            response = requests.post(signup_url, json=payload, proxies=proxies)
             
             print(f"响应状态码: {response.status_code}")
             
@@ -170,6 +189,8 @@ def poll_emails(config, email, timeout=600, poll_interval=5):
         'Referer': f"{email_base}/"
     }
     
+    proxies = get_proxies(config)
+    
     print(f"\n开始轮询邮箱，超时时间: {timeout}秒")
     print(f"轮询间隔: {poll_interval}秒")
     
@@ -180,7 +201,7 @@ def poll_emails(config, email, timeout=600, poll_interval=5):
         attempt += 1
         try:
             print(f"\n[尝试 {attempt}] 检查邮件...")
-            response = requests.get(api_url, headers=headers)
+            response = requests.get(api_url, headers=headers, proxies=proxies)
             response.raise_for_status()
             data = response.json()
             
@@ -254,8 +275,10 @@ def verify_email(config, email, otp):
     print(f"  邮箱: {email}")
     print(f"  验证码: {otp}")
     
+    proxies = get_proxies(config)
+    
     try:
-        response = requests.post(verify_url, json=payload)
+        response = requests.post(verify_url, json=payload, proxies=proxies)
         
         print(f"\n响应状态码: {response.status_code}")
         
@@ -290,11 +313,15 @@ def verify_email(config, email, otp):
         return {"success": False}
 
 
-def login_and_get_session(email, password):
+def login_and_get_session(email, password, proxies=None):
     """登录并获取session token"""
     try:
         # 使用session来保持cookie
         session = requests.Session()
+        
+        # 如果有代理设置，应用到session
+        if proxies:
+            session.proxies.update(proxies)
         
         # 步骤0: 访问session接口获取初始cookies
         print(f"\n访问session接口...")
@@ -352,7 +379,7 @@ def login_and_get_session(email, password):
         return None
 
 
-def get_referral_stats(session_token):
+def get_referral_stats(session_token, proxies=None):
     """获取推荐统计信息"""
     try:
         print(f"\n获取推荐统计...")
@@ -360,7 +387,8 @@ def get_referral_stats(session_token):
         
         response = requests.get(
             "https://megallm.io/api/referral/stats",
-            cookies=cookies
+            cookies=cookies,
+            proxies=proxies
         )
         
         if response.status_code == 200:
@@ -381,8 +409,8 @@ def get_referral_stats(session_token):
         return None
 
 
-def save_to_csv(email, password, api_key, csv_file='accounts.csv'):
-    """保存账号信息到CSV文件"""
+def save_to_csv(api_key, csv_file='accounts.csv'):
+    """保存API Key到CSV文件"""
     import csv
     import os
     
@@ -394,14 +422,14 @@ def save_to_csv(email, password, api_key, csv_file='accounts.csv'):
         
         # 如果文件不存在，先写入表头
         if not file_exists:
-            writer.writerow(['Email', 'Password', 'API Key', 'Created At'])
+            writer.writerow(['API Key', 'Created At'])
         
-        # 写入账号信息
+        # 写入API Key信息
         from datetime import datetime
         created_at = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        writer.writerow([email, password, api_key, created_at])
+        writer.writerow([api_key, created_at])
     
-    print(f"\n✓ 账号信息已保存到 {csv_file}")
+    print(f"\n✓ API Key已保存到 {csv_file}")
 
 
 # 全局邀请码池
@@ -510,16 +538,17 @@ def register_once(config):
         print("\n✗ 邮箱验证失败")
         return False
     
-    # 步骤7: 保存账号信息
-    print("\n[步骤7] 保存账号信息...")
-    save_to_csv(email, account_info['password'], verify_result['apiKey'])
+    # 步骤7: 保存API Key
+    print("\n[步骤7] 保存API Key...")
+    save_to_csv(verify_result['apiKey'])
     
     # 步骤8: 登录获取session token并更新邀请码池
     print("\n[步骤8] 登录获取推荐码...")
-    session_token = login_and_get_session(email, account_info['password'])
+    proxies = get_proxies(config)
+    session_token = login_and_get_session(email, account_info['password'], proxies)
     
     if session_token:
-        new_referral_code = get_referral_stats(session_token)
+        new_referral_code = get_referral_stats(session_token, proxies)
         if new_referral_code:
             update_referral_pool(new_referral_code)
     else:
