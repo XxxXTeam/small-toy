@@ -4,6 +4,8 @@ import random
 import string
 import time
 import urllib.parse
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
 def load_config():
@@ -51,6 +53,13 @@ def get_temp_email(config):
             print("响应中未找到email字段")
             return None
             
+    except requests.exceptions.ProxyError as e:
+        print(f"代理错误: {e}")
+        print("请检查代理配置是否正确，或尝试:")
+        print("  1. 禁用代理 (设置 proxy.enabled = false)")
+        print("  2. 更换代理服务器")
+        print("  3. 检查代理是否需要付费或认证")
+        return None
     except requests.RequestException as e:
         print(f"请求失败: {e}")
         return None
@@ -156,6 +165,16 @@ def signup_account(config, email, referral_code, max_retries=5):
                 print(f"\n等待30秒后重试...")
                 time.sleep(30)
             
+        except requests.exceptions.ProxyError as e:
+            print(f"\n代理错误: {e}")
+            print("请检查代理配置是否正确，或尝试:")
+            print("  1. 禁用代理 (设置 proxy.enabled = false)")
+            print("  2. 更换代理服务器")
+            print("  3. 检查代理是否需要付费或认证")
+            retry_count += 1
+            if retry_count < max_retries:
+                print(f"\n等待30秒后重试...")
+                time.sleep(30)
         except requests.RequestException as e:
             print(f"\n请求异常: {e}")
             retry_count += 1
@@ -410,31 +429,37 @@ def get_referral_stats(session_token, proxies=None):
 
 
 def save_to_csv(api_key, csv_file='accounts.csv'):
-    """保存API Key到CSV文件"""
+    """保存API Key到CSV文件（线程安全）"""
     import csv
     import os
     
-    # 检查文件是否存在，如果不存在则创建并写入表头
-    file_exists = os.path.isfile(csv_file)
-    
-    with open(csv_file, 'a', newline='', encoding='utf-8') as f:
-        writer = csv.writer(f)
+    with csv_lock:
+        # 检查文件是否存在，如果不存在则创建并写入表头
+        file_exists = os.path.isfile(csv_file)
         
-        # 如果文件不存在，先写入表头
-        if not file_exists:
-            writer.writerow(['API Key', 'Created At'])
+        with open(csv_file, 'a', newline='', encoding='utf-8') as f:
+            writer = csv.writer(f)
+            
+            # 如果文件不存在，先写入表头
+            if not file_exists:
+                writer.writerow(['API Key', 'Created At'])
+            
+            # 写入API Key信息
+            from datetime import datetime
+            created_at = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            writer.writerow([api_key, created_at])
         
-        # 写入API Key信息
-        from datetime import datetime
-        created_at = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        writer.writerow([api_key, created_at])
-    
-    print(f"\n✓ API Key已保存到 {csv_file}")
+        print(f"\n✓ API Key已保存到 {csv_file}")
 
 
 # 全局邀请码池
 REFERRAL_CODE_POOL = []
 REFERRAL_POOL_FILE = 'referral_pool.json'
+
+# 线程锁用于同步操作
+csv_lock = threading.Lock()
+pool_lock = threading.Lock()
+stats_lock = threading.Lock()
 
 
 def load_referral_pool():
@@ -442,108 +467,114 @@ def load_referral_pool():
     global REFERRAL_CODE_POOL
     import os
     
-    if os.path.exists(REFERRAL_POOL_FILE):
-        try:
-            with open(REFERRAL_POOL_FILE, 'r', encoding='utf-8') as f:
-                REFERRAL_CODE_POOL = json.load(f)
-            print(f"✓ 已从本地加载 {len(REFERRAL_CODE_POOL)} 个邀请码")
-        except Exception as e:
-            print(f"⚠ 加载邀请码池失败: {e}")
+    with pool_lock:
+        if os.path.exists(REFERRAL_POOL_FILE):
+            try:
+                with open(REFERRAL_POOL_FILE, 'r', encoding='utf-8') as f:
+                    REFERRAL_CODE_POOL = json.load(f)
+                print(f"✓ 已从本地加载 {len(REFERRAL_CODE_POOL)} 个邀请码")
+            except Exception as e:
+                print(f"⚠ 加载邀请码池失败: {e}")
+                REFERRAL_CODE_POOL = []
+        else:
+            print("本地无邀请码池文件，将使用配置中的默认邀请码")
             REFERRAL_CODE_POOL = []
-    else:
-        print("本地无邀请码池文件，将使用配置中的默认邀请码")
-        REFERRAL_CODE_POOL = []
 
 
 def save_referral_pool():
-    """将邀请码池保存到本地文件"""
+    """将邀请码池保存到本地文件（线程安全）"""
     global REFERRAL_CODE_POOL
-    try:
-        with open(REFERRAL_POOL_FILE, 'w', encoding='utf-8') as f:
-            json.dump(REFERRAL_CODE_POOL, f, ensure_ascii=False, indent=2)
-        print(f"✓ 邀请码池已保存到本地文件")
-    except Exception as e:
-        print(f"⚠ 保存邀请码池失败: {e}")
+    with pool_lock:
+        try:
+            with open(REFERRAL_POOL_FILE, 'w', encoding='utf-8') as f:
+                json.dump(REFERRAL_CODE_POOL, f, ensure_ascii=False, indent=2)
+            print(f"✓ 邀请码池已保存到本地文件")
+        except Exception as e:
+            print(f"⚠ 保存邀请码池失败: {e}")
 
 
 def update_referral_pool(new_code):
-    """更新邀请码池并保存到本地"""
+    """更新邀请码池并保存到本地（线程安全）"""
     global REFERRAL_CODE_POOL
-    if new_code and new_code not in REFERRAL_CODE_POOL:
-        REFERRAL_CODE_POOL.append(new_code)
-        print(f"\n✓ 邀请码池已更新，当前包含 {len(REFERRAL_CODE_POOL)} 个邀请码")
-        save_referral_pool()
+    with pool_lock:
+        if new_code and new_code not in REFERRAL_CODE_POOL:
+            REFERRAL_CODE_POOL.append(new_code)
+            print(f"\n✓ 邀请码池已更新，当前包含 {len(REFERRAL_CODE_POOL)} 个邀请码")
+    save_referral_pool()
 
 
 def get_random_referral_code(config):
-    """从池中随机获取邀请码，如果池为空则使用配置中的"""
+    """从池中随机获取邀请码，如果池为空则使用配置中的（线程安全）"""
     global REFERRAL_CODE_POOL
-    if REFERRAL_CODE_POOL:
-        code = random.choice(REFERRAL_CODE_POOL)
-        print(f"使用邀请码池中的邀请码: {code}")
-        return code
-    else:
-        code = config.get('referral_code', '')
-        print(f"使用配置中的默认邀请码: {code}")
-        return code
+    with pool_lock:
+        if REFERRAL_CODE_POOL:
+            code = random.choice(REFERRAL_CODE_POOL)
+            print(f"使用邀请码池中的邀请码: {code}")
+            return code
+        else:
+            code = config.get('referral_code', '')
+            print(f"使用配置中的默认邀请码: {code}")
+            return code
 
 
-def register_once(config):
+def register_once(config, thread_id=None):
     """执行一次完整的注册流程"""
-    print("\n" + "="*60)
-    print("开始新的注册流程")
-    print("="*60)
+    thread_prefix = f"[线程{thread_id}] " if thread_id is not None else ""
+    
+    print(f"\n{thread_prefix}{'='*60}")
+    print(f"{thread_prefix}开始新的注册流程")
+    print(f"{thread_prefix}{'='*60}")
     
     # 步骤1: 获取邀请码
-    print("\n[步骤1] 获取邀请码...")
+    print(f"\n{thread_prefix}[步骤1] 获取邀请码...")
     referral_code = get_random_referral_code(config)
     
     # 步骤2: 获取临时邮箱
-    print("\n[步骤2] 获取临时邮箱...")
+    print(f"\n{thread_prefix}[步骤2] 获取临时邮箱...")
     email = get_temp_email(config)
     
     if not email:
-        print("✗ 获取邮箱失败")
+        print(f"{thread_prefix}✗ 获取邮箱失败")
         return False
     
     # 步骤3: 注册账号
-    print("\n[步骤3] 注册账号...")
+    print(f"\n{thread_prefix}[步骤3] 注册账号...")
     account_info = signup_account(config, email, referral_code)
     
     if not account_info['success']:
-        print("\n✗ 注册失败")
+        print(f"\n{thread_prefix}✗ 注册失败")
         return False
     
     # 步骤4: 轮询邮箱获取验证码
-    print("\n[步骤4] 轮询邮箱获取验证码...")
+    print(f"\n{thread_prefix}[步骤4] 轮询邮箱获取验证码...")
     emails = poll_emails(config, email, timeout=600, poll_interval=5)
     
     if not emails:
-        print("\n✗ 未收到验证邮件")
+        print(f"\n{thread_prefix}✗ 未收到验证邮件")
         return False
     
     # 步骤5: 提取验证码
-    print("\n[步骤5] 提取验证码...")
+    print(f"\n{thread_prefix}[步骤5] 提取验证码...")
     verification_code = extract_verification_code(emails)
     
     if not verification_code:
-        print("\n✗ 未能提取验证码")
+        print(f"\n{thread_prefix}✗ 未能提取验证码")
         return False
     
     # 步骤6: 验证邮箱
-    print("\n[步骤6] 验证邮箱...")
+    print(f"\n{thread_prefix}[步骤6] 验证邮箱...")
     verify_result = verify_email(config, email, verification_code)
     
     if not verify_result['success']:
-        print("\n✗ 邮箱验证失败")
+        print(f"\n{thread_prefix}✗ 邮箱验证失败")
         return False
     
     # 步骤7: 保存API Key
-    print("\n[步骤7] 保存API Key...")
+    print(f"\n{thread_prefix}[步骤7] 保存API Key...")
     save_to_csv(verify_result['apiKey'])
     
     # 步骤8: 登录获取session token并更新邀请码池
-    print("\n[步骤8] 登录获取推荐码...")
+    print(f"\n{thread_prefix}[步骤8] 登录获取推荐码...")
     proxies = get_proxies(config)
     session_token = login_and_get_session(email, account_info['password'], proxies)
     
@@ -552,16 +583,43 @@ def register_once(config):
         if new_referral_code:
             update_referral_pool(new_referral_code)
     else:
-        print("⚠ 未能获取session token，跳过邀请码池更新")
+        print(f"{thread_prefix}⚠ 未能获取session token，跳过邀请码池更新")
     
-    print("\n" + "="*60)
-    print("✓ 注册流程成功完成!")
-    print(f"  邮箱: {email}")
-    print(f"  密码: {account_info['password']}")
-    print(f"  API Key: {verify_result['apiKey']}")
-    print("="*60)
+    print(f"\n{thread_prefix}{'='*60}")
+    print(f"{thread_prefix}✓ 注册流程成功完成!")
+    print(f"{thread_prefix}  邮箱: {email}")
+    print(f"{thread_prefix}  密码: {account_info['password']}")
+    print(f"{thread_prefix}  API Key: {verify_result['apiKey']}")
+    print(f"{thread_prefix}{'='*60}")
     
     return True
+
+
+def run_worker(config, thread_id, success_count_list, fail_count_list):
+    """单个工作线程的执行函数"""
+    while True:
+        try:
+            result = register_once(config, thread_id)
+            
+            with stats_lock:
+                if result:
+                    success_count_list[0] += 1
+                    print(f"\n[线程{thread_id}] 当前统计: 成功 {success_count_list[0]} 次, 失败 {fail_count_list[0]} 次")
+                else:
+                    fail_count_list[0] += 1
+                    print(f"\n[线程{thread_id}] 当前统计: 成功 {success_count_list[0]} 次, 失败 {fail_count_list[0]} 次")
+            
+            # 成功或失败后都短暂等待
+            wait_time = 30 if result else 30
+            print(f"\n[线程{thread_id}] 等待{wait_time}秒后进行下一次注册...")
+            time.sleep(wait_time)
+                
+        except Exception as e:
+            with stats_lock:
+                fail_count_list[0] += 1
+            print(f"\n[线程{thread_id}] ✗ 发生异常: {e}")
+            print(f"[线程{thread_id}] 等待30秒后重试...")
+            time.sleep(30)
 
 
 def main():
@@ -576,37 +634,65 @@ def main():
     print("\n加载邀请码池...")
     load_referral_pool()
     
-    success_count = 0
-    fail_count = 0
+    # 获取线程数配置，默认为1
+    thread_count = config.get('threads', 1)
+    if thread_count < 1:
+        thread_count = 1
     
-    # 循环注册
-    while True:
+    print(f"\n配置的线程数: {thread_count}")
+    
+    # 共享的成功和失败计数（使用列表以便在函数间共享）
+    success_count_list = [0]
+    fail_count_list = [0]
+    
+    if thread_count == 1:
+        # 单线程模式
+        print("使用单线程模式运行")
         try:
-            result = register_once(config)
-            
-            if result:
-                success_count += 1
-                print(f"\n当前统计: 成功 {success_count} 次, 失败 {fail_count} 次")
-            else:
-                fail_count += 1
-                print(f"\n当前统计: 成功 {success_count} 次, 失败 {fail_count} 次")
-                print("等待30秒后重试...")
-                time.sleep(30)
-            
-            # 成功后短暂等待，避免请求过快
-            if result:
-                print("\n等待30秒后进行下一次注册...")
-                time.sleep(30)
+            while True:
+                result = register_once(config)
                 
+                if result:
+                    success_count_list[0] += 1
+                    print(f"\n当前统计: 成功 {success_count_list[0]} 次, 失败 {fail_count_list[0]} 次")
+                else:
+                    fail_count_list[0] += 1
+                    print(f"\n当前统计: 成功 {success_count_list[0]} 次, 失败 {fail_count_list[0]} 次")
+                    print("等待30秒后重试...")
+                    time.sleep(30)
+                
+                # 成功后短暂等待，避免请求过快
+                if result:
+                    print("\n等待30秒后进行下一次注册...")
+                    time.sleep(30)
+                    
         except KeyboardInterrupt:
             print("\n\n用户中断，程序退出")
-            print(f"最终统计: 成功 {success_count} 次, 失败 {fail_count} 次")
-            break
-        except Exception as e:
-            fail_count += 1
-            print(f"\n✗ 发生异常: {e}")
-            print("等待30秒后重试...")
-            time.sleep(30)
+            print(f"最终统计: 成功 {success_count_list[0]} 次, 失败 {fail_count_list[0]} 次")
+    else:
+        # 多线程模式
+        print(f"使用多线程模式运行 ({thread_count} 个线程)")
+        
+        # 创建线程池
+        with ThreadPoolExecutor(max_workers=thread_count) as executor:
+            try:
+                # 提交所有工作线程
+                futures = []
+                for i in range(thread_count):
+                    future = executor.submit(run_worker, config, i+1, success_count_list, fail_count_list)
+                    futures.append(future)
+                
+                # 等待所有任务完成（实际上会一直运行直到被中断）
+                for future in as_completed(futures):
+                    try:
+                        future.result()
+                    except Exception as e:
+                        print(f"线程异常: {e}")
+                        
+            except KeyboardInterrupt:
+                print("\n\n用户中断，正在停止所有线程...")
+                executor.shutdown(wait=True)
+                print(f"最终统计: 成功 {success_count_list[0]} 次, 失败 {fail_count_list[0]} 次")
 
 
 if __name__ == "__main__":
