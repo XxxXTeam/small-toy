@@ -1,4 +1,9 @@
 {
   "email_base": "https://mail.chatgpt.org.uk",
-  "referral_code": ""
+  "referral_code": "",
+  "proxy": {
+    "enabled": false,
+    "http": "",
+    "https": ""
+  }
 }
